@@ -1,4 +1,5 @@
 """All interactions with infoblox."""  # pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import copy
@@ -324,7 +325,7 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
                 "object": "ipv4address",
                 "data": {"network_view": view, "network": prefix, "status": "USED"},
                 "args": {
-                    "_return_fields": "ip_address,mac_address,names,network,objects,status,types,usage,comment,extattrs"
+                    "_return_fields": "ip_address,mac_address,names,network,network_view,objects,status,types,usage,comment,extattrs"
                 },
             }
             return query
@@ -805,7 +806,7 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
         if plugin_defined_network_view:
             params["network_view"] = plugin_defined_network_view
         if prefix:
-            params["network"]: prefix
+            params["network"] = prefix
         try:
             response = self._request("GET", url_path, params=params)
         except HTTPError as err:
@@ -1312,18 +1313,27 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
         logger.info("Infoblox IP Address updated: %s", response.json())
         return response.json()
 
-    def get_tree_from_container(self, root_container: str) -> list:
+    def get_tree_from_container(self, root_container: str, network_view: Optional[str] = None) -> list:
         """Returns the list of all child containers from a given root container."""
         flattened_tree = []
         stack = []
         root_containers = self.get_network_containers(prefix=root_container)
+        if network_view:
+            root_containers = self.get_network_containers(prefix=root_container, network_view=network_view)
+        else:
+            root_containers = self.get_network_containers(prefix=root_container)
         if root_containers:
             stack = [root_containers[0]]
 
+        get_child_network_containers_kwargs = {}
+        if network_view:
+            get_child_network_containers_kwargs["network_view"] = network_view
+
         while stack:
             current_node = stack.pop()
+            get_child_network_containers_kwargs.update({"prefix": current_node["network"]})
             flattened_tree.append(current_node)
-            children = self.get_child_network_containers(prefix=current_node["network"])
+            children = self.get_child_network_containers(**get_child_network_containers_kwargs)
             stack.extend(children)
 
         return flattened_tree
@@ -1339,7 +1349,7 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
 
         return new_list
 
-    def get_network_containers(self, prefix: str = "", ipv6: bool = False):
+    def get_network_containers(self, prefix: str = "", ipv6: bool = False, network_view: Optional[str] = None):
         """Get all Network Containers.
 
         Args:
@@ -1371,8 +1381,8 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
             "_return_fields": "network,comment,network_view,extattrs,rir_organization,rir",
             "_max_results": 100000,
         }
-        if PLUGIN_CFG.get("NAUTOBOT_INFOBLOX_NETWORK_VIEW"):
-            params.update({"network_view": PLUGIN_CFG["NAUTOBOT_INFOBLOX_NETWORK_VIEW"]})
+        if network_view:
+            params.update({"network_view": network_view})
         if prefix:
             params.update({"network": prefix})
         response = self._request("GET", url_path, params=params)
@@ -1383,7 +1393,7 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
             res.update({"status": "container"})
         return results
 
-    def get_child_network_containers(self, prefix: str):
+    def get_child_network_containers(self, prefix: str, network_view: Optional[str] = None):
         """Get all Child Network Containers for Container.
 
         Returns:
@@ -1415,8 +1425,8 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
             "_return_fields": "network,comment,network_view,extattrs,rir_organization,rir",
             "_max_results": 100000,
         }
-        if PLUGIN_CFG.get("NAUTOBOT_INFOBLOX_NETWORK_VIEW"):
-            params.update({"network_view": PLUGIN_CFG["NAUTOBOT_INFOBLOX_NETWORK_VIEW"]})
+        if network_view:
+            params.update({"network_view": network_view})
         params.update({"network_container": prefix})
         response = self._request("GET", url_path, params=params)
         response = response.json()
@@ -1426,7 +1436,7 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
             res.update({"status": "container"})
         return results
 
-    def get_child_subnets_from_container(self, prefix: str):
+    def get_child_subnets_from_container(self, prefix: str, network_view: Optional[str] = None):
         """Get child subnets from container.
 
         Args:
@@ -1463,8 +1473,8 @@ class InfobloxApi:  # pylint: disable=too-many-public-methods,  too-many-instanc
             "_return_fields": "network,network_view,comment,extattrs,rir_organization,rir,vlans",
             "_max_results": 10000,
         }
-        if PLUGIN_CFG.get("NAUTOBOT_INFOBLOX_NETWORK_VIEW"):
-            params.update({"network_view": PLUGIN_CFG["NAUTOBOT_INFOBLOX_NETWORK_VIEW"]})
+        if network_view:
+            params.update({"network_view": network_view})
         params.update({"network_container": prefix})
 
         try:
