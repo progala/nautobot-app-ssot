@@ -1,4 +1,5 @@
 """Nautobot Adapter for Infoblox integration."""
+
 # pylint: disable=duplicate-code
 import datetime
 from diffsync import DiffSync
@@ -7,9 +8,10 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.dcim.models import Location
 from nautobot.extras.choices import CustomFieldTypeChoices
 from nautobot.extras.models import Relationship, Role, Status, Tag, CustomField
-from nautobot.ipam.models import IPAddress, Prefix, VLAN, VLANGroup
+from nautobot.ipam.models import IPAddress, Namespace, Prefix, VLAN, VLANGroup
 from nautobot.tenancy.models import Tenant
 from nautobot_ssot.integrations.infoblox.diffsync.models import (
+    NautobotNamespace,
     NautobotNetwork,
     NautobotIPAddress,
     NautobotVlanGroup,
@@ -88,18 +90,20 @@ class NautobotMixin:
 class NautobotAdapter(NautobotMixin, DiffSync):  # pylint: disable=too-many-instance-attributes
     """DiffSync adapter using ORM to communicate to Nautobot."""
 
+    namespace = NautobotNamespace
     prefix = NautobotNetwork
     ipaddress = NautobotIPAddress
     vlangroup = NautobotVlanGroup
     vlan = NautobotVlan
 
-    top_level = ["vlangroup", "vlan", "prefix", "ipaddress"]
+    top_level = ["namespace", "vlangroup", "vlan", "prefix", "ipaddress"]
 
     status_map = {}
     location_map = {}
     relationship_map = {}
     tenant_map = {}
     vrf_map = {}
+    namespace_map = {}
     prefix_map = {}
     role_map = {}
     ipaddr_map = {}
@@ -125,17 +129,35 @@ class NautobotAdapter(NautobotMixin, DiffSync):  # pylint: disable=too-many-inst
         """
         super().sync_complete(source, *args, **kwargs)
 
+    def load_namespaces(self):
+        """Load Namespace DiffSync model."""
+        # TODO: Filter only to namespaces present in filters @progala
+        all_namespaces = Namespace.objects.all()
+        default_cfs = get_default_custom_fields(cf_contenttype=ContentType.objects.get_for_model(Namespace))
+        for namespace in all_namespaces:
+            self.namespace_map[namespace.name] = namespace.id
+            _namespace = self.namespace(
+                name=namespace.name,
+                ext_attrs={**default_cfs, **namespace.custom_field_data},
+                pk=namespace.id,
+            )
+            try:
+                self.add(_namespace)
+            except ObjectAlreadyExists:
+                self.job.logger.warning(f"Found duplicate namespace: {namespace.name}.")
+
     def load_prefixes(self):
         """Load Prefixes from Nautobot."""
         all_prefixes = Prefix.objects.all()
         default_cfs = get_default_custom_fields(cf_contenttype=ContentType.objects.get_for_model(Prefix))
         for prefix in all_prefixes:
-            self.prefix_map[str(prefix.prefix)] = prefix.id
+            self.prefix_map[(prefix.namespace.name), str(prefix.prefix)] = prefix.id
             if "ssot_synced_to_infoblox" in prefix.custom_field_data:
                 prefix.custom_field_data.pop("ssot_synced_to_infoblox")
             current_vlans = get_prefix_vlans(prefix=prefix)
             _prefix = self.prefix(
                 network=str(prefix.prefix),
+                namespace=prefix.namespace.name,
                 description=prefix.description,
                 network_type=prefix.type,
                 ext_attrs={**default_cfs, **prefix.custom_field_data},
@@ -157,12 +179,15 @@ class NautobotAdapter(NautobotMixin, DiffSync):  # pylint: disable=too-many-inst
             self.ipaddr_map[str(ipaddr.address)] = ipaddr.id
             addr = ipaddr.host
             # the last Prefix is the most specific and is assumed the one the IP address resides in
-            prefix = Prefix.objects.net_contains(addr).last()
+            # prefix = Prefix.objects.net_contains(addr).last()
+            prefix = ipaddr.parent
 
             # The IP address must have a parent prefix
             if not prefix:
                 self.job.logger.warning(f"IP Address {addr} does not have a parent prefix and will not be synced.")
+                self.ipaddr_map[str(ipaddr.address), "Global"] = ipaddr.id
                 continue
+            self.ipaddr_map[str(ipaddr.address), prefix.namespace.name] = ipaddr.id
             # IP address must be part of a prefix that is not a container
             # This means the IP cannot be associated with an IPv4 Network within Infoblox
             if prefix.type == "container":
@@ -176,6 +201,7 @@ class NautobotAdapter(NautobotMixin, DiffSync):  # pylint: disable=too-many-inst
             _ip = self.ipaddress(
                 address=addr,
                 prefix=str(prefix),
+                namespace=prefix.namespace.name,
                 status=ipaddr.status.name if ipaddr.status else None,
                 ip_addr_type=ipaddr.type,
                 prefix_length=prefix.prefix_length if prefix else ipaddr.prefix_length,
