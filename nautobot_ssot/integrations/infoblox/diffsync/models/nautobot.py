@@ -1,4 +1,5 @@
 """Nautobot Models for Infoblox integration with SSoT app."""
+
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.utils.text import slugify
@@ -10,8 +11,9 @@ from nautobot.ipam.models import IPAddress as OrmIPAddress
 from nautobot.ipam.models import Prefix as OrmPrefix
 from nautobot.ipam.models import VLAN as OrmVlan
 from nautobot.ipam.models import VLANGroup as OrmVlanGroup
+from nautobot.ipam.models import Namespace as OrmNamespace
 from nautobot_ssot.integrations.infoblox.constant import PLUGIN_CFG
-from nautobot_ssot.integrations.infoblox.diffsync.models.base import Network, IPAddress, Vlan, VlanView
+from nautobot_ssot.integrations.infoblox.diffsync.models.base import Namespace, Network, IPAddress, Vlan, VlanView
 from nautobot_ssot.integrations.infoblox.utils.diffsync import create_tag_sync_from_infoblox
 from nautobot_ssot.integrations.infoblox.utils.nautobot import get_prefix_vlans
 
@@ -94,22 +96,46 @@ def process_ext_attrs(diffsync, obj: object, extattrs: dict):  # pylint: disable
             obj.custom_field_data.update({_cf_dict["key"]: str(attr_value)})
 
 
+class NautobotNamespace(Namespace):
+    """Nautobot implementation of the Namespace model."""
+
+    @classmethod
+    def create(cls, diffsync, ids, attrs):
+        """Create Namespace object in Nautobot."""
+        _ns = OrmNamespace(
+            name=ids["name"],
+        )
+        if attrs.get("ext_attrs"):
+            process_ext_attrs(diffsync=diffsync, obj=_ns, extattrs=attrs["ext_attrs"])
+        _ns.tags.add(create_tag_sync_from_infoblox())
+        _ns.validated_save()
+        diffsync.namespace_map[ids["name"]] = _ns.id
+        return super().create(ids=ids, diffsync=diffsync, attrs=attrs)
+
+
 class NautobotNetwork(Network):
     """Nautobot implementation of the Network Model."""
 
     @classmethod
     def create(cls, diffsync, ids, attrs):
         """Create Prefix object in Nautobot."""
+        # Remap "default" Network View to "Global" Namespace
+        if ids["namespace"] == "default":
+            namespace_name = "Global"
+        else:
+            namespace_name = ids["namespace"]
         _prefix = OrmPrefix(
             prefix=ids["network"],
             status_id=diffsync.status_map["Active"],
             type=attrs["network_type"],
             description=attrs.get("description", ""),
+            namespace=diffsync.namespace_map[namespace_name],
         )
         prefix_ranges = attrs.get("ranges")
         if prefix_ranges:
             _prefix.cf["dhcp_ranges"] = ",".join(prefix_ranges)
-        if attrs.get("vlans"):
+        # We should check for VLANs if we actually loaded them
+        if attrs.get("vlans") and diffsync.vlan_map:
             relation = diffsync.relationship_map["Prefix -> VLAN"]
             for _, _vlan in attrs["vlans"].items():
                 index = 0
@@ -135,7 +161,7 @@ class NautobotNetwork(Network):
             process_ext_attrs(diffsync=diffsync, obj=_prefix, extattrs=attrs["ext_attrs"])
         _prefix.tags.add(create_tag_sync_from_infoblox())
         _prefix.validated_save()
-        diffsync.prefix_map[ids["network"]] = _prefix.id
+        diffsync.prefix_map[(ids["namespace"], ids["network"])] = _prefix.id
         return super().create(ids=ids, diffsync=diffsync, attrs=attrs)
 
     def update(self, attrs):  # pylint: disable=too-many-branches
@@ -152,7 +178,7 @@ class NautobotNetwork(Network):
         prefix_ranges = attrs.get("ranges")
         if prefix_ranges:
             _pf.cf["dhcp_ranges"] = ",".join(prefix_ranges)
-        if "vlans" in attrs:  # pylint: disable=too-many-nested-blocks
+        if "vlans" in attrs and self.diffsync.vlan_map:  # pylint: disable=too-many-nested-blocks
             current_vlans = get_prefix_vlans(prefix=_pf)
             if len(current_vlans) < len(attrs["vlans"]):
                 for _, item in attrs["vlans"].items():
@@ -223,18 +249,18 @@ class NautobotIPAddress(IPAddress):
             type=ip_addr_type,
             description=attrs.get("description", ""),
             dns_name=attrs.get("dns_name", ""),
-            parent_id=diffsync.prefix_map[ids["prefix"]],
+            parent_id=diffsync.prefix_map[(ids["namespace"], ids["prefix"])],
         )
         if attrs.get("ext_attrs"):
             process_ext_attrs(diffsync=diffsync, obj=_ip, extattrs=attrs["ext_attrs"])
         try:
             _ip.tags.add(create_tag_sync_from_infoblox())
             _ip.validated_save()
-            diffsync.ipaddr_map[_ip.address] = _ip.id
+            diffsync.ipaddr_map[(_ip.address, ids["namespace"])] = _ip.id
             return super().create(ids=ids, diffsync=diffsync, attrs=attrs)
         except ValidationError as err:
             diffsync.job.logger.warning(
-                f"Error with validating IP Address {ids['address']}/{ids['prefix_length']}. {err}"
+                f"Error with validating IP Address {ids['address']}/{ids['prefix_length']}-{ids['namespace']}. {err}"
             )
             return None
 
