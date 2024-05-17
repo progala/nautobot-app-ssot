@@ -187,8 +187,6 @@ class InfobloxAdapter(DiffSync):
             except ObjectAlreadyExists:
                 self.job.logger.warning(f"Duplicate prefix found: {new_pf}.")
 
-            # breakpoint()
-
     def load_ipaddresses(self):
         """Load InfobloxIPAddress DiffSync model."""
         try:
