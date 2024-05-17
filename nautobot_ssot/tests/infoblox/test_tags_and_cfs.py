@@ -10,6 +10,8 @@ from nautobot.ipam.models import VLAN, IPAddress, Prefix, VLANGroup
 from nautobot_ssot.integrations.infoblox.diffsync.adapters.infoblox import InfobloxAdapter
 from nautobot_ssot.integrations.infoblox.diffsync.adapters.nautobot import NautobotAdapter
 
+from .fixtures_infoblox import create_default_infoblox_config
+
 
 class TestTagging(TestCase):
     """Tests ensuring tagging is applied to objects synced from and to Infoblox."""
@@ -18,6 +20,7 @@ class TestTagging(TestCase):
         "Test class set up."
         self.tag_sync_from_infoblox = Tag.objects.get(name="SSoT Synced from Infoblox")
         self.tag_sync_to_infoblox = Tag.objects.get(name="SSoT Synced to Infoblox")
+        self.config = create_default_infoblox_config()
 
     def test_tags_have_correct_content_types_set(self):
         """Ensure tags have correct content types configured."""
@@ -28,17 +31,23 @@ class TestTagging(TestCase):
 
     def test_objects_synced_from_infoblox_are_tagged(self):
         """Ensure objects synced from Infoblox have 'SSoT Synced from Infoblox' tag applied."""
-        nb_diffsync = NautobotAdapter()
+        nb_diffsync = NautobotAdapter(config=self.config)
         nb_diffsync.job = Mock()
         nb_diffsync.load()
 
-        infoblox_adapter = InfobloxAdapter(conn=Mock())
+        infoblox_adapter = InfobloxAdapter(conn=Mock(), config=self.config)
 
+        ds_namespace = infoblox_adapter.namespace(
+            name="Global",
+            ext_attrs={},
+        )
+        infoblox_adapter.add(ds_namespace)
         ds_prefix = infoblox_adapter.prefix(
             network="10.0.0.0/8",
             description="Test Network",
             network_type="network",
             status="Active",
+            namespace="Global",
         )
         infoblox_adapter.add(ds_prefix)
         ds_ipaddress = infoblox_adapter.ipaddress(
@@ -49,6 +58,7 @@ class TestTagging(TestCase):
             prefix="10.0.0.0/8",
             prefix_length=8,
             ip_addr_type="host",
+            namespace="Global",
         )
         infoblox_adapter.add(ds_ipaddress)
         ds_vlangroup = infoblox_adapter.vlangroup(
@@ -107,12 +117,17 @@ class TestTagging(TestCase):
         )
         nb_vlan.validated_save()
 
-        nautobot_adapter = NautobotAdapter()
+        nautobot_adapter = NautobotAdapter(config=self.config)
         nautobot_adapter.job = Mock()
         nautobot_adapter.load()
 
-        infoblox_adapter = InfobloxAdapter(conn=Mock())
+        infoblox_adapter = InfobloxAdapter(conn=Mock(), config=self.config)
         infoblox_adapter.job = Mock()
+        ds_namespace = infoblox_adapter.namespace(
+            name="Global",
+            ext_attrs={},
+        )
+        infoblox_adapter.add(ds_namespace)
         nautobot_adapter.sync_to(infoblox_adapter)
 
         prefix = Prefix.objects.get(network="10.0.0.0", prefix_length="8")
@@ -132,6 +147,7 @@ class TestCustomFields(TestCase):
         """Test class set up."""
         self.today = datetime.date.today().isoformat()
         self.cf_synced_to_infoblox = CustomField.objects.get(key="ssot_synced_to_infoblox")
+        self.config = create_default_infoblox_config()
 
     def test_cfs_have_correct_content_types_set(self):
         """Ensure cfs have correct content types configured."""
@@ -171,13 +187,20 @@ class TestCustomFields(TestCase):
         )
         nb_vlan.validated_save()
 
-        nautobot_adapter = NautobotAdapter()
+        nautobot_adapter = NautobotAdapter(config=self.config)
         nautobot_adapter.job = Mock()
         nautobot_adapter.load()
 
         conn = Mock()
-        infoblox_adapter = InfobloxAdapter(conn=conn)
+        infoblox_adapter = InfobloxAdapter(conn=conn, config=self.config)
         infoblox_adapter.job = Mock()
+
+        ds_namespace = infoblox_adapter.namespace(
+            name="Global",
+            ext_attrs={},
+        )
+        infoblox_adapter.add(ds_namespace)
+
         nautobot_adapter.sync_to(infoblox_adapter)
 
         prefix = Prefix.objects.get(network="10.0.0.0", prefix_length="8")
